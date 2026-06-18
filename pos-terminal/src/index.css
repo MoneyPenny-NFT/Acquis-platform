@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-pos-bg text-white antialiased font-mono;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input, textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+}
+
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  .glass {
+    background: rgba(26, 34, 52, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Stroke animation for the success checkmark */
+  .check-path {
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+  }
+  .check-path.animated {
+    animation: check-draw 0.6s ease-out 0.15s forwards;
+  }
+}

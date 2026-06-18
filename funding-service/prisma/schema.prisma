@@ -1,0 +1,127 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── RfP lifecycle ────────────────────────────────────────────────────────────
+// States: created → validated → sent → presented →
+//   approved | declined | expired → settled → matched → credited
+
+model FundingRequest {
+  id               String    @id @default(cuid())
+  idempotencyKey   String    @unique
+  hederaAccountId  String
+  amountCents      Int
+  currency         String    @default("USD")
+  state            String    @default("created")
+
+  standingApprovalId String?
+  standingApproval   StandingApproval? @relation(fields: [standingApprovalId], references: [id])
+
+  // Bank provider reference returned when RfP is submitted
+  providerRef      String?
+
+  // Deadline — RfP is expired by job if still presented past this
+  expiresAt        DateTime
+
+  // State timestamps (set when entering each state)
+  presentedAt      DateTime?
+  approvedAt       DateTime?
+  declinedAt       DateTime?
+  expiredAt        DateTime?
+  settledAt        DateTime?
+  creditedAt       DateTime?
+
+  // Matched InboundCredit id
+  matchedCreditId  String?
+
+  // Reason for decline / expiry
+  declineReason    String?
+
+  // HCS message IDs (Hedera Consensus Service — Patent Claims 35–38)
+  hcsInvoiceTopicId String?   // validation record
+  hcsRequestMsgId   String?   // rfp.sent record
+  hcsCreditMsgId    String?   // credit.matched record
+
+  // Retry tracking for failed HCS writes
+  hcsPendingWrite  String?    // JSON: { type, payload } — null when none pending
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([hederaAccountId])
+  @@index([state])
+  @@index([providerRef])
+  @@index([standingApprovalId])
+}
+
+// ─── Standing approvals (mandates stored at customer's bank) ─────────────────
+// We store the mandate reference only; the bank enforces it.
+// No RfP may be created that exceeds these limits.
+
+model StandingApproval {
+  id               String    @id @default(cuid())
+  hederaAccountId  String
+  mandateRef       String    // opaque reference at customer's bank
+  perTxLimitCents  Int
+  periodLimitCents Int
+  periodDays       Int       @default(30)
+  expiresAt        DateTime
+  status           String    @default("active") // active | revoked | expired
+
+  fundingRequests  FundingRequest[]
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([hederaAccountId])
+  @@index([status])
+}
+
+// ─── ACH authorizations (NACHA authorization record) ─────────────────────────
+
+model AchAuthorization {
+  id                 String   @id @default(cuid())
+  hederaAccountId    String
+  routingNumber      String
+  accountNumberMask  String   // last 4 only — never store full account number
+  authType           String   // PPD | CCD | WEB
+  authDate           DateTime
+  status             String   @default("active") // active | returned | revoked
+  providerRef        String?  // bank's ACH trace number
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([hederaAccountId])
+  @@index([status])
+}
+
+// ─── Inbound credits ──────────────────────────────────────────────────────────
+// Credits that arrive in our settlement account. Must be matched to a
+// FundingRequest. Unmatched credits aged > 1 hour go to review queue.
+
+model InboundCredit {
+  id               String    @id @default(cuid())
+  providerRef      String    @unique
+  amountCents      Int
+  currency         String    @default("USD")
+  status           String    @default("unmatched") // unmatched | matched | reviewed
+  matchedRequestId String?
+
+  receivedAt       DateTime  @default(now())
+  matchedAt        DateTime?
+  reviewedAt       DateTime?
+
+  rawPayload       String    // JSON blob of original webhook payload
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status])
+  @@index([matchedRequestId])
+}

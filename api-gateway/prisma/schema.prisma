@@ -1,0 +1,61 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Transaction {
+  id        String   @id @default(cuid())
+  type      String
+  status    String   @default("pending")
+  payload   String
+  result    String?
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([type])
+}
+
+model BankAccount {
+  id               String           @id @default(cuid())
+  hederaAccountId  String
+  institutionName  String
+  accountMask      String
+  accountType      String
+  plaidAccountId   String
+  encryptedToken   String
+  tokenIv          String
+  tokenTag         String
+  stripeCustomerId String?
+  stripeSourceId   String?
+  status           String           @default("active")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  fundingRequests  FundingRequest[]
+
+  @@index([hederaAccountId])
+  @@index([status])
+}
+
+model FundingRequest {
+  id              String      @id @default(cuid())
+  bankAccountId   String
+  bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id])
+  hederaAccountId String
+  amountCents     Int
+  status          String      @default("processing")
+  stripePaymentId String?
+  hederaTxId      String?
+  error           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([hederaAccountId])
+  @@index([status])
+  @@index([stripePaymentId])
+}
