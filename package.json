@@ -8,7 +8,10 @@
     "pos-terminal",
     "card-sdk",
     "funding-service",
-    "xrpl-service"
+    "xrpl-service",
+    "credential-service",
+    "onboarding-service",
+    "enforcement-engine"
   ],
   "overrides": {
     "@noble/hashes": "^1.8.0",

@@ -9,4 +9,10 @@ module.exports = {
     '@acquis/hedera-service': '<rootDir>/../hedera-service/src',
     '@acquis/xrpl-service': '<rootDir>/tests/__mocks__/xrpl-service.ts',
   },
+  globals: {
+    'ts-jest': {
+      diagnostics: { warnOnly: true },
+      isolatedModules: true,
+    },
+  },
 };
