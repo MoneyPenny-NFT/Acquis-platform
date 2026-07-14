@@ -50,7 +50,8 @@ export async function sendPayment(params: SendPaymentParams): Promise<PaymentRes
     ledgerIndex: result.result.ledger_index ?? 0,
     amountDrops: params.amountDrops,
     destinationTag: params.destinationTag,
-    fee: result.result.Fee,
+    // xrpl@4: Fee moved from result.result.Fee → result.result.tx_json.Fee (API v2)
+    fee: (result.result as { tx_json?: { Fee?: string } }).tx_json?.Fee,
   };
 }
 
