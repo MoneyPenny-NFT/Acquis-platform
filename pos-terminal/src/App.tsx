@@ -6,6 +6,7 @@ import { BankLink } from './pages/BankLink';
 import { Receipt } from './pages/Receipt';
 import { Receipts } from './pages/Receipts';
 import { Settings } from './pages/Settings';
+import { Wallet } from './pages/Wallet';
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="bank-link" element={<BankLink />} />
         <Route path="receipt" element={<Receipt />} />
         <Route path="receipts" element={<Receipts />} />
+        <Route path="wallet" element={<Wallet />} />
         <Route path="settings" element={<Settings />} />
       </Routes>
     </SessionProvider>

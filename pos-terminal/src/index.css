@@ -4,7 +4,9 @@
 
 @layer base {
   body {
-    @apply bg-pos-bg text-white antialiased font-mono;
+    @apply bg-pos-bg antialiased;
+    color: #F2F6F8;
+    font-family: 'Inter', system-ui, sans-serif;
     user-select: none;
     -webkit-tap-highlight-color: transparent;
   }
@@ -12,6 +14,7 @@
   input, textarea {
     user-select: text;
     -webkit-user-select: text;
+    font-family: 'Inter', system-ui, sans-serif;
   }
 }
 
@@ -25,12 +28,21 @@
   }
 
   .glass {
-    background: rgba(26, 34, 52, 0.8);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: rgba(6, 24, 42, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
   }
 
-  /* Stroke animation for the success checkmark */
+  .card-elevated {
+    background: #081C2E;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  .teal-border-glow {
+    border-color: #02C39A;
+    box-shadow: 0 0 12px rgba(2,195,154,0.2), inset 0 0 12px rgba(2,195,154,0.04);
+  }
+
   .check-path {
     stroke-dasharray: 100;
     stroke-dashoffset: 100;

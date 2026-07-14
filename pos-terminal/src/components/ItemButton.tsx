@@ -13,19 +13,19 @@ export function ItemButton({ item }: Props) {
   return (
     <button
       onClick={() => addToCart(item)}
-      className={`relative flex flex-col items-center justify-center gap-1.5 rounded-2xl border
-                  p-4 min-h-[96px] transition-all active:scale-95 select-none
+      className={`relative flex flex-col items-center justify-center gap-2 rounded-2xl border
+                  p-4 min-h-[100px] transition-all duration-200 active:scale-95 select-none
                   ${qty > 0
-                    ? 'bg-pos-accent/10 border-pos-accent/50 shadow-[0_0_12px_rgba(56,189,248,0.15)]'
-                    : 'bg-pos-card border-pos-border hover:border-pos-muted'
+                    ? 'bg-pos-accent/10 border-pos-accent/60 shadow-teal-glow'
+                    : 'bg-pos-card border-pos-border hover:border-pos-border/80 shadow-card'
                   }`}
     >
       <span className="text-2xl leading-none">{item.emoji}</span>
-      <span className="text-xs font-medium text-white leading-none text-center truncate w-full">
+      <span className="text-xs font-semibold text-pos-text leading-none text-center truncate w-full">
         {item.name}
       </span>
-      <span className={`text-[11px] font-bold ${qty > 0 ? 'text-pos-accent' : 'text-pos-muted'}`}>
-        {item.price} tkn
+      <span className={`text-[11px] font-bold tabular-nums ${qty > 0 ? 'text-pos-accent' : 'text-pos-muted'}`}>
+        ${item.price.toFixed(2)}
       </span>
 
       {qty > 0 && (

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 
-export type PaymentMode = 'token' | 'hbar' | 'bank' | 'xrp';
+export type PaymentMode = 'token' | 'hbar' | 'bank' | 'xrp' | 'x402';
 
 export interface CatalogItem {
   id: string;
@@ -28,6 +28,18 @@ export interface XrpProof {
   fee?: string;
 }
 
+export interface HcsProof {
+  topicId: string;
+  sequenceNumber: number;
+  consensusTimestamp: string;
+  transactionId: string;
+}
+
+export interface AqsReward {
+  rewardUnits: number;
+  rewardDisplay: string;
+}
+
 export interface Receipt {
   id: string;
   mode: PaymentMode;
@@ -43,6 +55,8 @@ export interface Receipt {
   merchantName: string;
   status: 'settled' | 'processing';
   xrp?: XrpProof;
+  hcs?: HcsProof;
+  aqs?: AqsReward;
 }
 
 const DEFAULT_MERCHANT: MerchantConfig = {
