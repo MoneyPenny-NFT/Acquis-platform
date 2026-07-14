@@ -20,6 +20,11 @@ export const getAccountInfo = jest.fn().mockResolvedValue({
 export const getXrplClient = jest.fn();
 export const disconnectXrplClient = jest.fn().mockResolvedValue(undefined);
 export const sendPayment = jest.fn().mockResolvedValue({ txHash: 'MOCKTXHASH', destinationTag: 42 });
+export const verifyCredential = jest.fn().mockResolvedValue({ valid: false });
+export const createCredential = jest.fn().mockResolvedValue({ txHash: 'MOCK_CRED_CREATE', credentialId: 'stub' });
+export const acceptCredential = jest.fn().mockResolvedValue({ txHash: 'MOCK_CRED_ACCEPT' });
+export const deleteCredential = jest.fn().mockResolvedValue({ txHash: 'MOCK_CRED_DELETE' });
+export const configureMerchantPreauth = jest.fn().mockResolvedValue({ txHash: 'MOCK_PREAUTH' });
 
 export class SmartNodeGateway {
   constructor(_config: unknown) {}

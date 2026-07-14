@@ -54,6 +54,9 @@ jest.mock('../../src/plugins/prisma', () => {
           updateMany: jest.fn().mockResolvedValue({}),
           findUnique: jest.fn().mockResolvedValue(mockFundingRequest),
         },
+        merchantConfig: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
       });
       app.decorate('dbReady', true);
       app.addHook('onClose', async () => {});
@@ -61,14 +64,23 @@ jest.mock('../../src/plugins/prisma', () => {
   };
 });
 
+function getTransferToken() {
+  return (jest.requireMock('@acquis/hedera-service') as { TransferService: { transferToken: jest.Mock } })
+    .TransferService.transferToken;
+}
+
+const webhookHeaders = { 'stripe-signature': 'sig-test', 'content-type': 'application/json' };
+
 describe('Fund routes', () => {
   const app = getApp();
   afterAll(() => app.close());
 
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.HEDERA_OPERATOR_ID = '0.0.11111';
     process.env.HEDERA_OPERATOR_KEY = 'mock-key';
     process.env.HEDERA_DEFAULT_TOKEN_ID = '0.0.99999';
+    delete process.env.ACQUIS_REWARD_RATE_BPS;
   });
 
   it('POST /api/v1/fund returns 202 with fundingRequestId', async () => {
@@ -111,7 +123,6 @@ describe('Fund routes', () => {
   });
 
   it('POST /api/v1/fund/webhook does NOT require x-api-key', async () => {
-    // Webhook is exempt from API key auth — should reach the handler and return 400 (missing sig) not 401
     const res = await app.inject({
       method: 'POST', url: '/api/v1/fund/webhook',
       payload: {},
@@ -132,9 +143,55 @@ describe('Fund routes', () => {
     const res = await app.inject({
       method: 'POST', url: '/api/v1/fund/webhook',
       payload: '{}',
-      headers: { 'stripe-signature': 'sig-test', 'content-type': 'application/json' },
+      headers: webhookHeaders,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().received).toBe(true);
+  });
+
+  it('webhook passes rewardUnits (50), not raw amountCents (5000), to transferToken', async () => {
+    // amountCents=5000, rateBps=100 (default) → 5000*100/10000 = 50 units (0.50 AQT)
+    await app.ready();
+    (app as any).prisma.merchantConfig.findUnique.mockResolvedValueOnce(null);
+    (app as any).prisma.fundingRequest.findUnique.mockResolvedValueOnce(mockFundingRequest);
+
+    await app.inject({ method: 'POST', url: '/api/v1/fund/webhook', payload: '{}', headers: webhookHeaders });
+
+    expect(getTransferToken()).toHaveBeenCalledWith('0.0.99999', '0.0.11111', 'mock-key', '0.0.12345', 50);
+    expect(getTransferToken()).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(), 5000,
+    );
+  });
+
+  it('webhook skips transfer when reward floors to zero (55 cents at 100 bps = 0 units)', async () => {
+    await app.ready();
+    (app as any).prisma.merchantConfig.findUnique.mockResolvedValueOnce(null);
+    (app as any).prisma.fundingRequest.findUnique.mockResolvedValueOnce({ ...mockFundingRequest, amountCents: 55 });
+
+    await app.inject({ method: 'POST', url: '/api/v1/fund/webhook', payload: '{}', headers: webhookHeaders });
+
+    expect(getTransferToken()).not.toHaveBeenCalled();
+  });
+
+  it('webhook uses merchantConfig.rewardRateBps when a config row exists', async () => {
+    // merchantConfig row with 250 bps (2.5%): 5000*250/10000 = 125 units (1.25 AQT)
+    await app.ready();
+    (app as any).prisma.merchantConfig.findUnique.mockResolvedValueOnce({ rewardRateBps: 250 });
+    (app as any).prisma.fundingRequest.findUnique.mockResolvedValueOnce(mockFundingRequest);
+
+    await app.inject({ method: 'POST', url: '/api/v1/fund/webhook', payload: '{}', headers: webhookHeaders });
+
+    expect(getTransferToken()).toHaveBeenCalledWith('0.0.99999', '0.0.11111', 'mock-key', '0.0.12345', 125);
+  });
+
+  it('webhook falls back to 100 bps when merchantConfig row is absent', async () => {
+    // No config row and no ACQUIS_REWARD_RATE_BPS → default 100 bps → 50 units
+    await app.ready();
+    (app as any).prisma.merchantConfig.findUnique.mockResolvedValueOnce(null);
+    (app as any).prisma.fundingRequest.findUnique.mockResolvedValueOnce(mockFundingRequest);
+
+    await app.inject({ method: 'POST', url: '/api/v1/fund/webhook', payload: '{}', headers: webhookHeaders });
+
+    expect(getTransferToken()).toHaveBeenCalledWith('0.0.99999', '0.0.11111', 'mock-key', '0.0.12345', 50);
   });
 });

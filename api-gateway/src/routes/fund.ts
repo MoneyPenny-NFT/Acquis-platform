@@ -1,6 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { PrismaClient } from '@prisma/client';
 import { TransferService } from '@acquis/hedera-service';
 import * as StripeService from '../services/stripe';
+import { calculateReward } from '../utils/calculateReward';
+
+// merchantId = 'default' is the platform-wide fallback row.
+// Pass a specific merchantId once FundingRequest gains that field.
+async function getMerchantRewardRateBps(prisma: PrismaClient, merchantId = 'default'): Promise<number> {
+  const config = await prisma.merchantConfig.findUnique({ where: { merchantId } });
+  return config?.rewardRateBps ?? parseInt(process.env.ACQUIS_REWARD_RATE_BPS ?? '100', 10);
+}
 
 interface FundBody {
   bankAccountId: string;
@@ -96,7 +105,13 @@ export async function fundRoutes(app: FastifyInstance) {
 
           if (operatorId && operatorKey && tokenId) {
             try {
-              await TransferService.transferToken(tokenId, operatorId, operatorKey, hederaAccountId, req.amountCents);
+              const rateBps = await getMerchantRewardRateBps(app.prisma);
+              const reward = calculateReward({ amountCents: req.amountCents, rateBps });
+              if (!reward.isZero) {
+                await TransferService.transferToken(tokenId, operatorId, operatorKey, hederaAccountId, reward.rewardUnits);
+              } else {
+                app.log.info({ fundingRequestId, amountCents: req.amountCents, rateBps }, 'AQS reward floored to zero — transfer skipped');
+              }
               await app.prisma.fundingRequest.update({
                 where: { id: fundingRequestId },
                 data: { status: 'settled', stripePaymentId: charge.id },
