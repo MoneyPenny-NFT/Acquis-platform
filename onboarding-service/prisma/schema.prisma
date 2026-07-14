@@ -1,0 +1,59 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("ONBOARDING_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/onboarding-client"
+}
+
+model OnboardingSession {
+  id                     String    @id @default(uuid())
+  session_id             String    @unique
+  email                  String?
+  phone                  String?
+
+  // IDV step
+  idv_status             String    @default("pending")
+  idv_completed_at       DateTime?
+  legal_name             String?
+  date_of_birth          String?
+  address_city           String?
+  address_region         String?
+  address_postal         String?
+  documentary_status     String?
+  selfie_status          String?
+
+  // Bank link step
+  // DO NOT store raw account numbers or Plaid access tokens here
+  bank_link_status       String    @default("pending")
+  bank_link_completed_at DateTime?
+  plaid_item_id          String?
+  account_mask           String?
+  account_type           String?
+  institution_name       String?
+  identity_match_status  String?
+  identity_match_score   Int?
+
+  // Consent step
+  consent_status         String    @default("pending")
+  consent_completed_at   DateTime?
+  hcs_topic_id           String?
+  hcs_sequence_num       Int?
+  hcs_timestamp          String?
+  hcs_transaction_id     String?
+
+  // Credential issuance
+  acquis_id              String?
+  credential_status      String    @default("pending")
+  hedera_nft_token_id    String?
+  hedera_nft_serial      Int?
+  xrpl_credential_tx     String?
+  // TODO (production): collected from customer's wallet during onboarding
+  xrpl_address           String?
+
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+  expires_at             DateTime
+}
