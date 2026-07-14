@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "rootDir": ".",
+    "paths": {
+      "@acquis/hedera-service": ["../hedera-service/src/index.ts"],
+      "@acquis/xrpl-service":   ["../xrpl-service/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"]
+}

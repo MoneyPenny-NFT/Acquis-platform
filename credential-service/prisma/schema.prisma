@@ -1,0 +1,38 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("CREDENTIAL_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/credential-client"
+}
+
+model CustomerCredential {
+  id                  String   @id @default(uuid())
+  acquis_id           String   @unique
+  hedera_account_id   String
+  xrpl_address        String
+  hedera_nft_token_id String
+  hedera_nft_serial   Int
+  xrpl_credential_tx  String
+  tier                String   @default("starter")
+  aqs_balance         Int      @default(0)
+  status              String   @default("pending_acceptance")
+  enrolled_at         DateTime @default(now())
+  last_updated        DateTime @updatedAt
+  // JSON-encoded string array — SQLite does not support native array columns
+  network_memberships String   @default("[]")
+  agent_authorized    Boolean  @default(false)
+  agent_policy_id     String?
+}
+
+model MerchantPreauth {
+  id                 String    @id @default(uuid())
+  merchant_id        String    @unique
+  xrpl_address       String
+  preauth_configured Boolean   @default(false)
+  preauth_tx_hash    String?
+  configured_at      DateTime?
+  created_at         DateTime  @default(now())
+}
