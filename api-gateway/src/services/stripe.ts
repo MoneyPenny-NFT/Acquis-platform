@@ -47,3 +47,66 @@ export function constructWebhookEvent(rawBody: Buffer | string, signature: strin
   if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET must be set');
   return getStripe().webhooks.constructEvent(rawBody, signature, secret);
 }
+
+// ─── Stripe Connect Custom (KYB delegation) ─────────────────────────────────
+
+export interface ConnectAccountInfo {
+  accountId:              string;
+  chargesEnabled:         boolean;
+  payoutsEnabled:         boolean;
+  detailsSubmitted:       boolean;
+  requirements:           unknown;
+}
+
+export async function createConnectAccount(
+  merchantId: string,
+  legalName:  string,
+  email?:     string,
+): Promise<ConnectAccountInfo> {
+  const stripe = getStripe();
+  const account = await stripe.accounts.create({
+    type:    'express',
+    country: 'US',
+    email,
+    capabilities: {
+      card_payments: { requested: true },
+      transfers:     { requested: true },
+    },
+    business_profile: { name: legalName },
+    metadata: { acquis_merchant_id: merchantId },
+  });
+  return {
+    accountId:        account.id,
+    chargesEnabled:   account.charges_enabled,
+    payoutsEnabled:   account.payouts_enabled,
+    detailsSubmitted: account.details_submitted,
+    requirements:     account.requirements,
+  };
+}
+
+export async function createConnectAccountLink(
+  stripeAccountId: string,
+  refreshUrl:      string,
+  returnUrl:       string,
+): Promise<{ url: string; expiresAt: number }> {
+  const stripe = getStripe();
+  const link = await stripe.accountLinks.create({
+    account:     stripeAccountId,
+    refresh_url: refreshUrl,
+    return_url:  returnUrl,
+    type:        'account_onboarding',
+  });
+  return { url: link.url, expiresAt: link.expires_at };
+}
+
+export async function retrieveConnectAccount(stripeAccountId: string): Promise<ConnectAccountInfo> {
+  const stripe = getStripe();
+  const account = await stripe.accounts.retrieve(stripeAccountId);
+  return {
+    accountId:        account.id,
+    chargesEnabled:   account.charges_enabled,
+    payoutsEnabled:   account.payouts_enabled,
+    detailsSubmitted: account.details_submitted,
+    requirements:     account.requirements,
+  };
+}
