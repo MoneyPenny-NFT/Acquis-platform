@@ -5,6 +5,7 @@ datasource db {
 
 generator client {
   provider = "prisma-client-js"
+  output   = "../node_modules/@prisma/client"
 }
 
 model Transaction {
@@ -47,6 +48,7 @@ model FundingRequest {
   bankAccountId   String
   bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id])
   hederaAccountId String
+  merchantId      String      @default("default")
   amountCents     Int
   status          String      @default("processing")
   stripePaymentId String?
@@ -56,6 +58,311 @@ model FundingRequest {
   updatedAt       DateTime    @updatedAt
 
   @@index([hederaAccountId])
+  @@index([merchantId])
   @@index([status])
   @@index([stripePaymentId])
+}
+
+// Business entity backing every merchantId. Historically merchantId was a bare
+// string ('default', 'merchant-1'). Now every merchantId in other tables is
+// expected to correspond to a Merchant.id (or Merchant.slug, if that path is
+// preferred). Existing rows are backfilled by the initial migration.
+//
+// Sensitive PII (EIN) is stored plaintext for testnet only — production
+// migration to encrypted columns is in the build queue alongside webhook secret.
+model Merchant {
+  id                    String    @id @default(cuid())
+  slug                  String?   @unique // human-readable id ('merchant-1', 'default')
+  legalName             String
+  dbaName               String?
+  entityType            String?   // 'llc' | 'c_corp' | 's_corp' | 'sole_prop' | 'partnership'
+  ein                   String?   @unique
+  formationState        String?
+  formationDate         DateTime?
+  addressLine1          String?
+  addressLine2          String?
+  addressCity           String?
+  addressState          String?
+  addressPostal         String?
+  websiteUrl            String?
+  businessDescription   String?
+  mccCode               String?
+
+  // Agreement acceptance — filled by /merchants/:id/agreement/sign once
+  // MERCHANT_AGREEMENT_ENABLED=true. Immutable HCS record for audit.
+  agreementHash         String?
+  agreementSignedAt     DateTime?
+  agreementSignedBy     String?
+  hcsAgreementTopicId   String?
+  hcsAgreementSeqNumber Int?
+  hcsAgreementTxId      String?
+
+  // Stripe Connect (delegated KYB/BOI for card payment paths)
+  stripeAccountId       String?   @unique
+  stripeChargesEnabled  Boolean   @default(false)
+  stripePayoutsEnabled  Boolean   @default(false)
+  stripeRequirementsJson String?
+
+  status                String    @default("pending") // pending | agreement_signed | stripe_pending | active | suspended
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  merchantConfigs       MerchantConfig[]
+
+  @@index([status])
+  @@index([slug])
+  @@index([stripeAccountId])
+}
+
+// Merchant-level reward rate configuration. merchantId is the Merchant.id
+// FK (optional to keep pre-backfill rows valid). merchantId = 'default'
+// remains the platform-wide fallback row after backfill.
+model MerchantConfig {
+  id                  String    @id @default(cuid())
+  merchantId          String    @unique
+  merchant            Merchant? @relation(fields: [merchantId], references: [id])
+  rewardRateBps       Int       @default(100)
+  rewardRateSetBy     String    @default("platform_default")
+  rewardRateUpdatedAt DateTime?
+  webhookSecret       String?   // per-merchant POS webhook auth secret; null = webhook disabled
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([merchantId])
+}
+
+// Rewards-tier customers enrolled without full KYC.
+// kycLevel: 'rewards_only' | 'full'
+// For rewards_only, NFT is held custodially by the operator until upgrade.
+model AcquisCustomer {
+  id                       String        @id @default(cuid())
+  acquisId                 String        @unique @default(cuid())
+  phone                    String?       @unique
+  email                    String?       @unique
+  displayName              String?
+  hederaNftTokenId         String?
+  hederaNftSerial          Int?
+  xrplAddress              String?       @unique
+  kycLevel                 String        @default("rewards_only")
+  tier                     String        @default("starter")
+  aqsBalance               Int           @default(0)
+  enrollingMerchantId      String?
+  rewardsConsentGranted    Boolean       @default(false)
+  rewardsConsentAt         DateTime?
+  marketingConsentGranted  Boolean       @default(false)
+  marketingConsentChannels String        @default("[]")
+  marketingConsentAt       DateTime?
+  status                   String        @default("active")
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+  rewardEvents             RewardEvent[]
+  redemptionEvents         RedemptionEvent[]
+
+  @@index([acquisId])
+  @@index([phone])
+  @@index([email])
+}
+
+// Inbound webhook event log — every POS/Square webhook is recorded here regardless of outcome.
+// status: 'credited' | 'customer_not_found' | 'duplicate' | 'error'
+// customer_not_found rows are the data foundation for future retroactive queuing.
+model WebhookEvent {
+  id              String   @id @default(cuid())
+  source          String   // 'pos' | 'square'
+  merchantId      String
+  externalRef     String?  // Square payment ID or POS ref — used for idempotency
+  amountCents     Int?
+  customerContact String?  // JSON {phone?, email?}
+  customerId      String?  // set when customer matched
+  rewardEventId   String?  // set when reward credited
+  status          String   // 'credited' | 'customer_not_found' | 'duplicate' | 'error'
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+
+  @@unique([merchantId, externalRef])
+  @@index([merchantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Redemption request record — one per customer redeem call.
+// status: 'pending' (code issued) | 'validated' (merchant scanned) | 'expired' | 'cancelled'
+model RedemptionEvent {
+  id                String         @id @default(cuid())
+  acquisId          String
+  customer          AcquisCustomer @relation(fields: [acquisId], references: [acquisId])
+  merchantId        String
+  redeemUnits       Int
+  redeemDisplay     String
+  valueCents        Int
+  externalRef       String?
+  hcsSequenceNumber Int?
+  hcsTopicId        String?
+  status            String         @default("pending")
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  code              RedemptionCode?
+
+  @@unique([merchantId, externalRef])
+  @@index([acquisId])
+  @@index([merchantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Single-use redemption code. 8-char alphanumeric, 24h TTL.
+// status: 'active' | 'used' | 'expired'
+model RedemptionCode {
+  id                String          @id @default(cuid())
+  code              String          @unique
+  redemptionEventId String          @unique
+  redemptionEvent   RedemptionEvent @relation(fields: [redemptionEventId], references: [id])
+  expiresAt         DateTime
+  usedAt            DateTime?
+  usedByMerchantId  String?
+  status            String          @default("active")
+  createdAt         DateTime        @default(now())
+
+  @@index([code])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Versioned MerchantRuleSet — the full compiled rule set as JSON, stored
+// separately from MerchantConfig (which stays as the frequently-read
+// reward-rate slice). Every write is a new version; old versions are
+// immutable. hcsSequenceNumber links to the HCS record for the same version.
+model MerchantRuleSet {
+  id                String   @id @default(cuid())
+  merchantId        String
+  version           Int
+  hcsTopicId        String
+  hcsSequenceNumber Int?
+  hcsTransactionId  String?
+  ruleSetJson       String   // Full MerchantRuleSet serialized as JSON
+  effectiveAt       DateTime
+  createdAt         DateTime @default(now())
+
+  @@unique([merchantId, version])
+  @@index([merchantId])
+}
+
+// Fast index for Component B / C context queries. Every enforcement check
+// (approved or rejected) writes one row. Component C aggregates recent
+// rows by (customerId | merchantId, createdAt) for velocity + spend totals
+// + duplicate-window comparison. HCS records for the same evaluation are
+// linked via hcsSequenceNumber; the DB row is authoritative for query and
+// HCS is authoritative for audit.
+model EnforcementLog {
+  id            String   @id @default(cuid())
+  merchantId    String
+  customerId    String
+  amountCents   Int
+  category      String?
+  approved      Boolean
+  ruleSetVersion    Int?
+  failedRulesJson   String?  // JSON array of FailedRule when approved=false
+  hcsSequenceNumber Int?
+  hcsTopicId        String?
+  createdAt     DateTime @default(now())
+
+  @@index([merchantId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([approved])
+}
+
+// QR-scan enrollment session — created when a merchant displays the QR,
+// completed when the customer's wallet returns their public address.
+// Short-expiry (60-90 sec), single-use, idempotent close.
+// status: 'pending' | 'scanned' | 'completed' | 'expired' | 'cancelled'
+model EnrollmentSession {
+  id                    String    @id @default(cuid())
+  chain                 String    // 'xrpl' — first supported chain; 'hedera' planned
+  merchantIdContext     String    // which merchant's QR this was displayed at
+  capturedWalletAddress String?
+  status                String    @default("pending")
+  expiresAt             DateTime
+  scannedAt             DateTime?
+  completedAt           DateTime?
+  cancelledAt           DateTime?
+  // Filled after mint+HCS write on completion
+  acquisId              String?
+  credentialTxHash      String?
+  hcsConsentTopicId     String?
+  hcsConsentSeqNumber   Int?
+  consentTextHash       String?
+  consentTextVersion    String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status])
+  @@index([expiresAt])
+  @@index([merchantIdContext])
+}
+
+// One row per (merchant, chain, address) that a watcher is monitoring for
+// incoming payments. `lastProcessedTimestampOrLedger` is the high-water mark
+// used to resume on restart / backfill after WS reconnect.
+model WatchedMerchantAccount {
+  id                            String   @id @default(cuid())
+  merchantId                    String
+  chain                         String   // 'xrpl' | 'hedera'
+  address                       String
+  lastProcessedTimestampOrLedger String?
+  active                        Boolean  @default(true)
+  lastPolledAt                  DateTime?
+  lastMatchedTransactionAt      DateTime?
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+
+  @@unique([merchantId, chain, address])
+  @@index([active])
+}
+
+// Log of every wallet-to-merchant transaction observed by any watcher.
+// Idempotency via (chain, txHash) — a duplicate emission from reconnect/backfill
+// will fail the unique index and be no-op'd rather than double-credit.
+// status: 'matched' | 'customer_not_found' | 'duplicate' | 'error'
+model DetectedTransaction {
+  id                    String   @id @default(cuid())
+  chain                 String
+  txHash                String
+  senderAddress         String
+  recipientAddress      String
+  amount                String   // string to preserve full precision for drops / tinybar
+  currency              String   // 'XRP' | 'HBAR' | 'AQT' | ...
+  detectedAt            DateTime @default(now())
+  matchedCustomerAcquisId String?
+  rewardEventId         String?
+  status                String
+  errorMessage          String?
+
+  @@unique([chain, txHash])
+  @@index([recipientAddress])
+  @@index([senderAddress])
+  @@index([status])
+  @@index([detectedAt])
+}
+
+// Immutable reward credit log. externalRef per merchant is unique for idempotency.
+model RewardEvent {
+  id                String         @id @default(cuid())
+  merchantId        String
+  customerId        String
+  customer          AcquisCustomer @relation(fields: [customerId], references: [acquisId])
+  eventType         String
+  amountCents       Int?
+  rewardUnits       Int
+  externalRef       String?
+  hcsSequenceNumber Int?
+  hcsTopicId        String?
+  hederaTxId        String?
+  note              String?
+  status            String         @default("completed")
+  createdAt         DateTime       @default(now())
+
+  @@unique([merchantId, externalRef])
+  @@index([customerId])
+  @@index([merchantId])
+  @@index([createdAt])
 }
