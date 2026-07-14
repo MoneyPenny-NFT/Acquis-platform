@@ -7,6 +7,20 @@ import { payRoutes } from './pay';
 import { bankLinkRoutes } from './bankLink';
 import { fundRoutes } from './fund';
 import { xrplRoutes } from './xrpl';
+import { nftRoutes } from './nft';
+import { onboardingRoutes } from './onboarding';
+import { hcsRoutes } from './hcs';
+import { fundingRoutes } from './funding';
+import { rewardsRoutes } from './rewards';
+import { credentialsIssueRoutes } from './credentialsIssue';
+import { webhookRoutes } from './webhooks';
+import { authRoutes } from './auth';
+import { reconcileRoutes } from './reconcile';
+import { redeemRoutes } from './redeem';
+import { merchantRoutes } from './merchants';
+import { stripeConnectRoutes } from './stripeConnect';
+import { enrollmentRoutes } from './enrollment';
+import { merchantRuleRoutes } from './merchantRules';
 
 export async function registerRoutes(app: FastifyInstance) {
   app.register(healthRoutes);
@@ -17,4 +31,18 @@ export async function registerRoutes(app: FastifyInstance) {
   app.register(bankLinkRoutes);
   app.register(fundRoutes);
   app.register(xrplRoutes);
+  app.register(nftRoutes);
+  app.register(onboardingRoutes);
+  app.register(hcsRoutes);
+  app.register(fundingRoutes);
+  app.register(rewardsRoutes);
+  app.register(credentialsIssueRoutes);
+  app.register(webhookRoutes);
+  app.register(authRoutes);
+  app.register(reconcileRoutes);
+  app.register(redeemRoutes);
+  app.register(merchantRoutes);
+  app.register(stripeConnectRoutes);
+  app.register(enrollmentRoutes);
+  app.register(merchantRuleRoutes);
 }
