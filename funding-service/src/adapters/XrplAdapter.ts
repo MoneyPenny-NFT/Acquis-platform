@@ -31,7 +31,7 @@ export class XrplAdapter implements BankAdapter {
     this.webhookHandler = handler;
   }
 
-  async sendRfP(request: RfPRequest): Promise<RfPResult> {
+  async sendRfP(_request: RfPRequest): Promise<RfPResult> {
     const destinationTag = generateDestinationTag();
     // providerRef is the destination tag as a string — used to correlate
     // the incoming XRPL payment back to this FundingRequest.

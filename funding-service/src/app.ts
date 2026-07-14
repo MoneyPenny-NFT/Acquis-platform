@@ -5,6 +5,7 @@ import authPlugin from './plugins/auth';
 import { registerRoutes } from './routes';
 import { MockBankAdapter } from './adapters/MockBankAdapter';
 import { StubHederaClient } from './clients/HederaClient';
+import { HttpHederaClient } from './clients/HttpHederaClient';
 import { FundingService } from './services/FundingService';
 import type { BankAdapter } from './adapters/BankAdapter';
 
@@ -34,7 +35,9 @@ export function buildApp(opts: AppOptions = {}) {
   // Wire dependencies after prisma is ready
   app.after(() => {
     const bank    = opts.bankAdapter ?? new MockBankAdapter();
-    const hedera  = new StubHederaClient();
+    const hedera  = process.env.HEDERA_SERVICE_URL
+      ? new HttpHederaClient()
+      : new StubHederaClient();
     const service = new FundingService(app.prisma, bank, hedera);
 
     // Register webhook handler on the mock adapter so auto-fire mode works
