@@ -66,9 +66,13 @@ Never hardcode credentials.
 - HCS still writes every settlement record
 - pay.ts lines 19-91 — DO NOT TOUCH under any circumstances
 - @noble/hashes overrides in root package.json — DO NOT TOUCH
-- x402 mode stub — DO NOT TOUCH
 - SmartNode gateway — DO NOT TOUCH
 - funding-service RfP state machine — DO NOT TOUCH
+- (Removed 2026-07-14: "x402 mode stub — DO NOT TOUCH". The stub was
+  replaced with real facilitator-verified x402 this session, gated by
+  X402_ENABLED. Legacy stub path preserved as the X402_ENABLED=false
+  fallback for backward compatibility. See the "x402 protocol" section
+  below for the current implementation and testnet proof.)
 
 ## HCS message reading — chunking is not optional
 
@@ -113,25 +117,96 @@ helpers. Do not add a fresh `fetch(...api/v1/topics/.../messages/N)`
 call anywhere; the linting expectation is that the mirror-node URL
 appears in `hedera-service/src/services/hcs.service.ts` only.
 
-## Dependencies installed with intentionally-unused state
+## x402 protocol — real, facilitator-verified as of 2026-07-14
 
-Some packages are declared in `package.json` but currently have zero
-source imports. They are staged for planned future integration —
-do NOT remove them as part of dependency cleanup passes.
+The earlier stub in `api-gateway/src/routes/pay.ts` (x402 branch, ~line
+162, previously wrapping `executeTestnetPayment` in a synthetic envelope)
+has been replaced with a real x402 v2 protocol implementation.
 
-- **`x402-xrpl`** (declared in `xrpl-service/package.json` line 16
-  and `api-gateway/package.json` line 29) — installed but not yet
-  wired. Real x402 protocol verification is a separate dedicated
-  session and was confirmed as still-stubbed in the earlier xrpl@4
-  upgrade status audit (which showed the ground truth: package
-  installed, zero imports across `xrpl-service/src` and
-  `api-gateway/src`). Currently `/pay`'s `x402` mode wraps the
-  ordinary XRP settlement path — see the TODO comment in
-  `api-gateway/src/routes/pay.ts` inside the `mode === 'x402'`
-  branch around line 162 (`// TODO: Replace stub verification with
-  real x402-xrpl verifier`). When real x402 verification is built,
-  this package is the intended SDK entry point; leave it installed
-  in the interim so the future session doesn't have to re-add it.
+**Current behavior when `X402_ENABLED=true`:**
+1. Build spec-shaped `PaymentRequirements` (scheme `exact`, network
+   `xrpl:1`, amount in drops as string, `extra.sourceTag=804681468`,
+   `extra.invoiceId=acquis-${uuid}`, `extra.destinationTag`).
+2. Server-sign a presigned XRPL Payment via `XRPLPresignedPaymentPayer`
+   using `XRPL_CUSTOMER_SEED`.
+3. Call the configured facilitator's `/verify` endpoint — on
+   `isValid: false`, return HTTP 400 with a `PAYMENT-REQUIRED` response
+   header (spec-compliant retry signal).
+4. Call the facilitator's `/settle` endpoint — the facilitator submits
+   to XRPL and returns the settlement receipt.
+5. Return `settlementResponse.transaction` = real XRPL tx hash.
+
+**Facilitator:** t54's public hosted facilitator, no API key required.
+- testnet: `https://xrpl-facilitator-testnet.t54.ai` (network `xrpl:1`)
+- mainnet: `https://xrpl-facilitator-mainnet.t54.ai` (network `xrpl:0`)
+
+**Ordering guarantee:** enforcement engine check (`pay.ts:42`) →
+credential pre-check (`pay.ts:79`) → facilitator `/verify` →
+facilitator `/settle`. Enforcement rejections short-circuit before any
+facilitator round-trip, so a transaction blocked by merchant rules
+never pays the third-party latency cost.
+
+**When `X402_ENABLED=false` (default):** the legacy stub path is
+preserved verbatim for backward compatibility. Fail-closed until an
+operator explicitly opts in.
+
+**Live testnet proof (2026-07-14):** POST /api/v1/pay
+`{mode:'x402', amountCents:25}` → XRPL Payment tx
+`CD8F3DEC895D443D052916392928538DFA375C730C5F83812A3D6AB9219A5E17`,
+100000 drops, `tesSUCCESS`, independently verified via
+`https://s.altnet.rippletest.net:51234/`.
+
+Explorer:
+https://testnet.xrpl.org/transactions/CD8F3DEC895D443D052916392928538DFA375C730C5F83812A3D6AB9219A5E17
+
+Full env matrix in FEATURE_FLAGS.md section 7 (X402_ENABLED). The
+`x402-xrpl` npm package is now genuinely consumed (imports in
+`api-gateway/src/routes/pay.ts`); do not remove.
+
+## Testing gotcha — xrpl.js + ts-jest ESM parsing (SURFACED TWICE)
+
+xrpl.js ships both `src/*.ts` and `dist/npm/*.js`, and ts-jest walks
+into the `src/` tree, which imports `@noble/hashes` as native ESM.
+ts-jest cannot parse ESM under the default (CommonJS) transform,
+so any test file that transitively loads `xrpl` at test-file boot
+time crashes with:
+
+    SyntaxError: Unexpected token 'export'
+      at .../xrpl/src/index.ts
+
+**This has now bitten twice:**
+1. `xrpl-service/tests/credential.test.ts` (2026-07-13, XLS-70 rewrite)
+2. `api-gateway/tests/*.test.ts` (2026-07-14, x402 branch adding
+   `import { Wallet } from 'xrpl'` — broke 17 unrelated suites at
+   load time because pay.ts is loaded during app boot in every suite).
+
+### Fix pattern
+
+Two flavours, pick the one that matches scope:
+
+**Per-file (small blast radius):** `jest.mock('xrpl', () => ({
+  Wallet: { fromSeed: (seed) => ({ address: 'rMock...', seed }) },
+}));` at the top of the test file. Used in
+`xrpl-service/tests/credential.test.ts`.
+
+**Package-wide (many test files affected):** add a `moduleNameMapper`
+entry in `jest.config.js` pointing `^xrpl$` at a local mock file.
+Used in `api-gateway/jest.config.js` alongside the existing
+`@acquis/xrpl-service` and `x402-xrpl` mappings. Mock file lives at
+`tests/__mocks__/xrpl.ts` and only needs to export whatever the
+production code imports (`Wallet.fromSeed` is usually enough).
+
+### When it will bite next
+
+Any new import of `xrpl` into any workspace whose tests boot without
+one of the two fixes in place. Common triggers: importing `Wallet`,
+`Client`, or currency helpers directly from `xrpl` in a
+Fastify route / service / worker that also has jest tests.
+
+If you're adding a new xrpl import to production code in a package
+whose test suite runs green today, expect ts-jest to break tests
+that don't touch the new file — they load the same route bundle at
+boot. Apply the package-wide fix pre-emptively.
 
 ## AQS / AQT reward token
 
