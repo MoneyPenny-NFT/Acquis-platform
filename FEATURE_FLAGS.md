@@ -13,7 +13,7 @@ consumed by any code path.
 
 ## Summary
 
-Actually gates code (seven flags):
+Actually gates code (eight flags):
 
 - `CREDENTIAL_VERIFICATION_ENABLED` — fully wired end-to-end after slot 2 landed 2026-07-13
 - `KYC_ENFORCEMENT_ENABLED` — fully wired; blocked on attorney CIP documentation (customer KYC)
@@ -21,6 +21,7 @@ Actually gates code (seven flags):
 - `STRIPE_CONNECT_ENABLED` — fully wired; blocked on provisioning STRIPE_SECRET_KEY test-mode credentials
 - `QR_ENROLLMENT_ENABLED` — fully wired; blocked on attorney review of wallet-linkage consent text (services/enrollmentConsent.ts)
 - `ENFORCEMENT_ENGINE_ENABLED` — fully wired end-to-end; when true, `/pay` runs Merchant Rule Schema v1.1 validation before any settlement. Adapter today is a stub (`api-gateway/src/enforcement/stubAdapter.ts`); the pure-function engine (`@acquis/enforcement-engine`) is backend-agnostic — SmartNode / Hedera Hooks / native smart contract can each swap in later without touching pay.ts or the rule schema. Requires a MerchantRuleSet row for each merchant; if none exists, requests 503 with `reason: no_rule_set`.
+- `X402_ENABLED` — fully wired end-to-end 2026-07-14; when true, `/pay?mode=x402` builds a spec-shaped `PaymentRequirements`, presigns via `x402-xrpl` SDK (`XRPLPresignedPaymentPayer`), and delegates verify + settle to the configured facilitator (`X402_FACILITATOR_URL`, default `https://xrpl-facilitator-testnet.t54.ai`). Fail-closed when unset — legacy stub behavior preserved for backward compatibility. Ordering: enforcement engine → credential pre-check → facilitator /verify → facilitator /settle (cheap local check fails-fast before third-party round-trip).
 - `VITE_ADMIN_MODE` — client-side UI visibility only; backend enforces its own auth
 
 Documented in comments or UI but not enforced by any code (one ghost remaining):
@@ -228,7 +229,58 @@ Flipping the env var alone is sufficient once the consent text has attorney sign
 
 ---
 
-## 7. NFT_METADATA_UPDATES_ENABLED — REMOVED 2026-07-13
+## 7. X402_ENABLED
+
+**Flag name:** `X402_ENABLED`
+
+**Location in code:** `api-gateway/src/routes/pay.ts` (x402 branch)
+
+**Current value:**
+- `api-gateway/.env.example`: `false` (documented default)
+- `api-gateway/.env.local`: `false` (safe until t54 facilitator wiring is smoked live)
+
+**Companion env var:** `X402_FACILITATOR_URL` (default `https://xrpl-facilitator-testnet.t54.ai`, t54's public hosted testnet facilitator — no API key required).
+
+**Default behavior if unset:** Fail closed against the new flow. The `mode: 'x402'` branch runs the legacy stub (synthetic `x402Details` envelope + direct `executeTestnetPayment` submit) that shipped in the Phase 1 build. No calls are made to the facilitator.
+
+**What it actually gates:** When `true`, `/pay?mode=x402` runs the real x402 v2 protocol:
+1. Build a spec-shaped `PaymentRequirements` (`scheme: 'exact'`, `network: 'xrpl:1'`, `amount` in drops as string, `payTo` from `XRPL_MERCHANT_ADDRESS`, `extra.sourceTag: 804681468`, `extra.invoiceId`, `extra.destinationTag`).
+2. Server-sign a presigned XRPL `Payment` via `XRPLPresignedPaymentPayer` using `XRPL_CUSTOMER_SEED`.
+3. `POST /verify` against `X402_FACILITATOR_URL` — on `isValid: false`, respond 400 with a `PAYMENT-REQUIRED` response header (spec-compliant "your payment didn't work, here's what's required" signal).
+4. `POST /settle` against `X402_FACILITATOR_URL` — the facilitator submits to XRPL and returns the settlement receipt.
+5. Return `settlementResponse` with the real XRPL `transaction` hash.
+
+**Ordering guarantee:** Enforcement engine check runs FIRST (`pay.ts:35`), credential pre-check SECOND (`pay.ts:72`), and the x402 facilitator round-trips run only after both pass. A transaction rejected by merchant rules never pays the facilitator round-trip latency. Confirmed via test `enforcement rejects before any facilitator round-trip is attempted` in `pay.test.ts`.
+
+**TRUE ACTIVATION CONDITIONS:**
+- `X402_ENABLED=true` in `api-gateway/.env.local`
+- `X402_FACILITATOR_URL` set (defaults to t54 testnet)
+- `XRPL_MERCHANT_ADDRESS` + `XRPL_CUSTOMER_SEED` provisioned (already required by XRP mode)
+- `xrpl@4.6.0` installed (already true after the xrpl@4 upgrade)
+
+**PREREQUISITES TO ENABLE:**
+- None operationally for pilot — t54 requires no API key.
+- Pre-live: revisit whether Acquis wants to self-host a facilitator (would let enforcement rules sit inside the facilitator instead of before it), and whether to accept t54 as a runtime dependency.
+
+**Error → HTTP mapping under X402_ENABLED=true:**
+| Situation | HTTP | reason code |
+|---|---|---|
+| `X402_FACILITATOR_URL` unset | 503 | `facilitator_not_configured` |
+| Presign fails | 500 | `prepare_failed` |
+| Facilitator `/verify` unreachable | 502 | `facilitator_unreachable` |
+| Facilitator says `isValid: false` | 400 | `payment_verify_failed` (+ `PAYMENT-REQUIRED` header) |
+| Facilitator `/settle` unreachable | 502 | `facilitator_unreachable` |
+| Facilitator says `success: false` | 502 | `settle_failed` |
+| Success | 200 | `settlementResponse.transaction` = XRPL tx hash |
+
+**Response shape change under X402_ENABLED=true:**
+- Removed: `x402Details` (synthetic envelope), `txHash` (top-level), `smartnodeValidated: false` (SmartNode is XRP-branch-only, was always false here).
+- Added: `settlementResponse` (facilitator response), `paymentRequirements` (spec-shaped), `paymentPayload` (spec-shaped).
+- Preserved: `credentialVerified`, `customerNftTokenId`.
+
+---
+
+## 8. NFT_METADATA_UPDATES_ENABLED — REMOVED 2026-07-13
 
 **Historical note.** Previously appeared in `api-gateway/.env.example:16` as `NFT_METADATA_UPDATES_ENABLED=true`. Grep confirmed zero references in source — the flag was a ghost that implied operator control over NFT metadata writes without any actual guard code.
 

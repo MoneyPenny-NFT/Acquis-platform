@@ -14,6 +14,13 @@ jest.mock('@acquis/xrpl-service');
 import * as xrplService from '@acquis/xrpl-service';
 const verifyCredentialMock = xrplService.verifyCredential as jest.MockedFunction<typeof xrplService.verifyCredential>;
 
+// x402-xrpl + xrpl are moduleNameMapper'd to their manual mocks at
+// tests/__mocks__/x402-xrpl.ts and tests/__mocks__/xrpl.ts (jest.config.js).
+// The xrpl mock is a global load-time shim (all suites need it because pay.ts
+// imports { Wallet } from 'xrpl' and ts-jest cannot parse xrpl.js source).
+// x402-xrpl is exercised only under X402_ENABLED=true in this file.
+import { resetX402Mocks, verifyMock, settleMock, preparePaymentMock, encodePaymentRequiredHeaderMock } from '../__mocks__/x402-xrpl';
+
 jest.mock('../../src/plugins/prisma', () => ({
   default: async (app: any) => {
     app.decorate('prisma', {});
@@ -193,5 +200,138 @@ describe('Pay route', () => {
     // Approved / rejected pass-through behaviors are covered exhaustively
     // by tests/enforcement/stubAdapter.test.ts and by the live testnet
     // demonstration.
+  });
+
+  // ─── x402 branch — X402_ENABLED flag + facilitator flow ─────────────────
+  describe('x402 mode', () => {
+    beforeEach(() => {
+      resetX402Mocks();
+      delete process.env.X402_ENABLED;
+      delete process.env.ENFORCEMENT_ENGINE_ENABLED;
+      delete process.env.CREDENTIAL_VERIFICATION_ENABLED;
+      process.env.XRPL_MERCHANT_ADDRESS = 'rMerchantAddr';
+      process.env.XRPL_CUSTOMER_SEED    = 'sEdMockSeed';
+      process.env.XRPL_XRP_USD_RATE     = '2.50';
+      process.env.X402_FACILITATOR_URL  = 'https://xrpl-facilitator-testnet.t54.ai';
+    });
+
+    it('X402_ENABLED unset → legacy stub path is used (no facilitator call)', async () => {
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.mode).toBe('x402');
+      expect(body.x402Details?.version).toBe('x402/v1');
+      expect(body).not.toHaveProperty('settlementResponse');
+      expect(verifyMock).not.toHaveBeenCalled();
+      expect(settleMock).not.toHaveBeenCalled();
+    });
+
+    it('X402_ENABLED=true → verify + settle happy path returns settlementResponse', async () => {
+      process.env.X402_ENABLED = 'true';
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 250 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.success).toBe(true);
+      expect(body.mode).toBe('x402');
+      expect(body.settlementResponse.success).toBe(true);
+      expect(body.settlementResponse.transaction).toBe('MOCKX402TXHASH1234567890');
+      expect(body.paymentRequirements.scheme).toBe('exact');
+      expect(body.paymentRequirements.network).toBe('xrpl:1');
+      expect(body.paymentRequirements.asset).toBe('XRP');
+      expect(body.paymentRequirements.payTo).toBe('rMerchantAddr');
+      expect(preparePaymentMock).toHaveBeenCalledTimes(1);
+      expect(verifyMock).toHaveBeenCalledTimes(1);
+      expect(settleMock).toHaveBeenCalledTimes(1);
+      // The old smartnodeValidated field should not appear on x402 responses
+      expect(body).not.toHaveProperty('smartnodeValidated');
+    });
+
+    it('X402_ENABLED=true with X402_FACILITATOR_URL unset → 503 facilitator_not_configured', async () => {
+      process.env.X402_ENABLED = 'true';
+      delete process.env.X402_FACILITATOR_URL;
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().reason).toBe('facilitator_not_configured');
+      expect(verifyMock).not.toHaveBeenCalled();
+    });
+
+    it('facilitator /verify returns isValid=false → 400 with PAYMENT-REQUIRED response header', async () => {
+      process.env.X402_ENABLED = 'true';
+      verifyMock.mockResolvedValueOnce({ isValid: false, invalidReason: 'amount_mismatch' });
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().reason).toBe('payment_verify_failed');
+      expect(res.json().invalidReason).toBe('amount_mismatch');
+      expect(res.headers['payment-required']).toBe('BASE64_MOCK_PAYMENT_REQUIRED_HEADER');
+      expect(encodePaymentRequiredHeaderMock).toHaveBeenCalledTimes(1);
+      expect(settleMock).not.toHaveBeenCalled();
+    });
+
+    it('facilitator /settle returns success=false → 502 settle_failed', async () => {
+      process.env.X402_ENABLED = 'true';
+      settleMock.mockResolvedValueOnce({
+        success: false, transaction: '', network: 'xrpl:1',
+        errorReason: 'tecDST_TAG_NEEDED',
+      });
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(502);
+      expect(res.json().reason).toBe('settle_failed');
+      expect(res.json().errorReason).toBe('tecDST_TAG_NEEDED');
+    });
+
+    it('facilitator /verify throws (unreachable) → 502 facilitator_unreachable', async () => {
+      process.env.X402_ENABLED = 'true';
+      verifyMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(502);
+      expect(res.json().reason).toBe('facilitator_unreachable');
+      expect(settleMock).not.toHaveBeenCalled();
+    });
+
+    it('enforcement rejects before any facilitator round-trip is attempted', async () => {
+      process.env.X402_ENABLED = 'true';
+      process.env.ENFORCEMENT_ENGINE_ENABLED = 'true';
+      // Without merchantId/customerId the enforcement gate returns 400 up-front.
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().message).toMatch(/merchantId and customerId/);
+      // Critical: the facilitator was never contacted.
+      expect(preparePaymentMock).not.toHaveBeenCalled();
+      expect(verifyMock).not.toHaveBeenCalled();
+      expect(settleMock).not.toHaveBeenCalled();
+    });
+
+    it('X402_ENABLED=true without XRPL creds → 503 xrpl_not_configured (before any facilitator call)', async () => {
+      process.env.X402_ENABLED = 'true';
+      delete process.env.XRPL_MERCHANT_ADDRESS;
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/pay',
+        payload: { mode: 'x402', amountCents: 100 }, headers: authHeader,
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json().message).toMatch(/XRPL credentials/);
+      expect(preparePaymentMock).not.toHaveBeenCalled();
+    });
   });
 });

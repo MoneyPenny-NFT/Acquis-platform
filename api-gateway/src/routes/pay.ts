@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import { Wallet } from 'xrpl';
+import {
+  FacilitatorClient,
+  XRPLPresignedPaymentPayer,
+  encodePaymentRequiredHeader,
+} from 'x402-xrpl';
 import { TransferService } from '@acquis/hedera-service';
-import { executeTestnetPayment, generateDestinationTag, usdCentsToXrp, formatXrp, verifyCredential } from '@acquis/xrpl-service';
+import { executeTestnetPayment, generateDestinationTag, usdCentsToXrp, xrpToDrops, formatXrp, verifyCredential } from '@acquis/xrpl-service';
 import type { VerifyCredentialResult } from '@acquis/xrpl-service';
 import { logTransaction } from '../plugins/logTransaction';
 import { runEnforcementCheck } from '../enforcement/stubAdapter';
@@ -149,33 +156,149 @@ export async function payRoutes(app: FastifyInstance) {
       }
       const destinationTag = generateDestinationTag();
       const xrpAmount      = usdCentsToXrp(cents, xrpUsdRate);
-      const x402Details = {
-        version:        'x402/v1',
-        asset:          'XRP',
-        network:        'xrpl-testnet',
-        payTo:          merchantAddress,
-        amount:         formatXrp(xrpAmount),
-        amountCents:    cents,
-        destinationTag,
-        deadline:       new Date(Date.now() + 60_000).toISOString(),
+
+      // ─── X402_ENABLED=false (default) — legacy stub behavior ─────────────
+      // Preserved verbatim for backward compatibility with callers that hit
+      // /pay?mode=x402 today. Flip X402_ENABLED=true to route through the
+      // real x402 facilitator flow below.
+      if (process.env.X402_ENABLED !== 'true') {
+        const x402Details = {
+          version:        'x402/v1',
+          asset:          'XRP',
+          network:        'xrpl-testnet',
+          payTo:          merchantAddress,
+          amount:         formatXrp(xrpAmount),
+          amountCents:    cents,
+          destinationTag,
+          deadline:       new Date(Date.now() + 60_000).toISOString(),
+        };
+        const result = await executeTestnetPayment({ amountCents: cents, xrpUsdRate, merchantAddress, customerSeed, destinationTag });
+        return reply.send({
+          success:            true,
+          mode,
+          txHash:             result.txHash,
+          ledgerIndex:        result.ledgerIndex,
+          destinationTag,
+          fee:                result.fee,
+          amountCents:        cents,
+          xrpAmount:          formatXrp(xrpAmount),
+          merchantAddress,
+          x402Details,
+          credentialVerified:   credentialValid?.valid ?? false,
+          customerNftTokenId:   credentialValid?.credential?.uri ?? null,
+        });
+      }
+
+      // ─── X402_ENABLED=true — real x402 protocol via hosted facilitator ───
+      // Server-signs the presigned XRPL Payment on behalf of the testnet
+      // customer wallet (XRPL_CUSTOMER_SEED), then delegates verify + settle
+      // to the configured facilitator instead of submitting to XRPL directly.
+      // See FEATURE_FLAGS.md#X402_ENABLED for enable prerequisites.
+      const facilitatorUrl = process.env.X402_FACILITATOR_URL;
+      if (!facilitatorUrl) {
+        return reply.status(503).send({
+          statusCode: 503, error: 'Service Unavailable',
+          message: 'X402_ENABLED=true but X402_FACILITATOR_URL is not set',
+          reason:  'facilitator_not_configured',
+        });
+      }
+
+      const network = (process.env.X402_NETWORK ?? 'xrpl:1') as 'xrpl:0' | 'xrpl:1' | 'xrpl:2';
+      const wsUrl   = process.env.XRPL_WSS_URL ?? 'wss://s.altnet.rippletest.net:51233';
+      const amountDrops = xrpToDrops(xrpAmount);
+
+      const paymentRequirements = {
+        scheme:            'exact',
+        network,
+        amount:             amountDrops,
+        asset:              'XRP',
+        payTo:              merchantAddress,
+        maxTimeoutSeconds:  60,
+        extra: {
+          sourceTag:      804681468,
+          invoiceId:      `acquis-${randomUUID()}`,
+          destinationTag,
+        },
       };
-      // TODO: Replace stub verification with real x402-xrpl verifier
-      // once xrpl@4.x upgrade is evaluated separately
-      const result = await executeTestnetPayment({ amountCents: cents, xrpUsdRate, merchantAddress, customerSeed, destinationTag });
+
+      let paymentHeader: string;
+      let paymentPayload: unknown;
+      try {
+        const wallet = Wallet.fromSeed(customerSeed);
+        const payer  = new XRPLPresignedPaymentPayer({ wallet, network, wsUrl });
+        const prepared = await payer.preparePayment(paymentRequirements, {
+          invoiceId: paymentRequirements.extra.invoiceId,
+        });
+        paymentHeader  = prepared.paymentHeader;
+        paymentPayload = prepared.paymentPayload;
+      } catch (err) {
+        app.log.error({ err }, 'x402 preparePayment failed');
+        return reply.status(500).send({
+          statusCode: 500, error: 'Internal Server Error',
+          message: 'Failed to prepare x402 presigned payment',
+          reason:  'prepare_failed',
+        });
+      }
+
+      const facilitator = new FacilitatorClient({ baseUrl: facilitatorUrl });
+
+      let verifyResult: { isValid: boolean; invalidReason?: string | null; payer?: string | null };
+      try {
+        verifyResult = await facilitator.verify({ paymentHeader, paymentRequirements });
+      } catch (err) {
+        app.log.error({ err, facilitatorUrl }, 'x402 facilitator /verify unreachable');
+        return reply.status(502).send({
+          statusCode: 502, error: 'Bad Gateway',
+          message: 'x402 facilitator /verify unreachable',
+          reason:  'facilitator_unreachable',
+        });
+      }
+      if (!verifyResult.isValid) {
+        reply.header('PAYMENT-REQUIRED', encodePaymentRequiredHeader({
+          x402Version: 2,
+          resource: {
+            url:         `${request.protocol}://${request.hostname}/api/v1/pay?mode=x402`,
+            description: `Acquis testnet payment (${cents} cents)`,
+            mimeType:    'application/json',
+          },
+          accepts: [paymentRequirements],
+        }));
+        return reply.status(400).send({
+          statusCode: 400, error: 'Bad Request',
+          message: `x402 facilitator rejected payment: ${verifyResult.invalidReason ?? 'invalid'}`,
+          reason:  'payment_verify_failed',
+          invalidReason: verifyResult.invalidReason ?? null,
+        });
+      }
+
+      let settleResult: { success: boolean; transaction: string; network: string; payer?: string | null; errorReason?: string | null };
+      try {
+        settleResult = await facilitator.settle({ paymentHeader, paymentRequirements });
+      } catch (err) {
+        app.log.error({ err, facilitatorUrl }, 'x402 facilitator /settle unreachable');
+        return reply.status(502).send({
+          statusCode: 502, error: 'Bad Gateway',
+          message: 'x402 facilitator /settle unreachable',
+          reason:  'facilitator_unreachable',
+        });
+      }
+      if (!settleResult.success) {
+        return reply.status(502).send({
+          statusCode: 502, error: 'Bad Gateway',
+          message: `x402 facilitator failed to settle: ${settleResult.errorReason ?? 'unknown'}`,
+          reason:  'settle_failed',
+          errorReason: settleResult.errorReason ?? null,
+        });
+      }
+
       return reply.send({
         success:            true,
         mode,
-        txHash:             result.txHash,
-        ledgerIndex:        result.ledgerIndex,
-        destinationTag,
-        fee:                result.fee,
-        amountCents:        cents,
-        xrpAmount:          formatXrp(xrpAmount),
-        merchantAddress,
-        x402Details,
-        smartnodeValidated:   false,
-        credentialVerified:   credentialValid?.valid ?? false,
-        customerNftTokenId:   credentialValid?.credential?.uri ?? null,
+        settlementResponse: settleResult,
+        paymentRequirements,
+        paymentPayload,
+        credentialVerified: credentialValid?.valid ?? false,
+        customerNftTokenId: credentialValid?.credential?.uri ?? null,
       });
     }
 

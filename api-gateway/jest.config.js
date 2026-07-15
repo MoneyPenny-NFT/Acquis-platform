@@ -8,6 +8,8 @@ module.exports = {
   moduleNameMapper: {
     '@acquis/hedera-service': '<rootDir>/../hedera-service/src',
     '@acquis/xrpl-service': '<rootDir>/tests/__mocks__/xrpl-service.ts',
+    '^x402-xrpl$': '<rootDir>/tests/__mocks__/x402-xrpl.ts',
+    '^xrpl$': '<rootDir>/tests/__mocks__/xrpl.ts',
   },
   globals: {
     'ts-jest': {

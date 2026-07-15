@@ -26,7 +26,8 @@
     "ioredis": "^5.3.0",
     "plaid": "^42.2.0",
     "stripe": "^22.2.0",
-    "x402-xrpl": "^0.1.1"
+    "x402-xrpl": "^0.1.1",
+    "xrpl": "^4.6.0"
   },
   "devDependencies": {
     "@types/bull": "^4.10.0",
