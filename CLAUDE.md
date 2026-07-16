@@ -208,6 +208,43 @@ whose test suite runs green today, expect ts-jest to break tests
 that don't touch the new file — they load the same route bundle at
 boot. Apply the package-wide fix pre-emptively.
 
+## Reporting convention — proof URLs must be single-line and unbroken
+
+When surfacing verification links to the user (XRPL testnet explorer,
+Hedera HashScan, mirror-node responses, GitHub SHAs, or anything they
+would click to independently verify a claim), output the URL as a
+complete, single-line, plain-text string. Do NOT:
+
+- wrap URLs in markdown link syntax `[label](url)` when the user is
+  meant to copy or manually verify the URL;
+- put URLs inside markdown tables (columns often wrap mid-URL);
+- put a label on a separate line above a bare URL — several terminals
+  reflow the URL up onto the label line and break the hash;
+- append trailing punctuation immediately after the URL.
+
+Correct format is label AND URL on the same physical line, or the URL
+entirely alone on its own line with no adjacent text:
+
+    CredentialCreate: https://testnet.xrpl.org/transactions/489961A1116CCBB06D93AD95434532AB8E8FAD3B74EC2D2E3D25706A7E437F1C
+
+or
+
+    https://testnet.xrpl.org/transactions/489961A1116CCBB06D93AD95434532AB8E8FAD3B74EC2D2E3D25706A7E437F1C
+
+**Why:** every session in this project's history has produced proof
+links the user is expected to independently verify against a live
+testnet. Split or truncated URLs mean the verification step silently
+fails — the user has re-asked for correctly-formatted links multiple
+times across sessions, most recently on 2026-07-16 during the QR
+enrollment smoke test. Making this a repo-tracked convention keeps
+it enforced across fresh clones and any environment, not just the
+local machine's Claude Code memory.
+
+Exception: URLs inside documentation files (like this one, or
+FEATURE_FLAGS.md) may use inline markdown or code fences where
+readability warrants it — the convention above applies specifically
+to chat-style output surfaced to a human for verification.
+
 ## AQS / AQT reward token
 
 Token ID: 0.0.9199123 (testnet) — symbol AQT, name "AcquisTest"
